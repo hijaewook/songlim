@@ -1,0 +1,9 @@
+.venv
+__pycache__
+*.pyc
+.git
+.gitignore
+run.bat
+publish_update.bat
+open_render.bat
+README.md
