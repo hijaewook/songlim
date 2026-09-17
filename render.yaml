@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: coop-roguelike
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /health

@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>협동 로그라이크 프로토타입</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      background: #111318; color: #eceff4; font-family: Arial, "Noto Sans KR", sans-serif;
+    }
+    #wrap { width: min(1100px, 100vw); padding: 14px; }
+    #top {
+      display:flex; justify-content:space-between; align-items:center; gap:10px;
+      margin-bottom:10px; color:#cfd8dc; font-size:14px;
+    }
+    canvas {
+      width:100%; aspect-ratio:16/10; background:#1a1f28; border:1px solid #39414f;
+      border-radius:10px; display:block; box-shadow:0 12px 40px #0008;
+    }
+    #join, #rewardModal, #resultModal {
+      position:fixed; inset:0; background:#000b; display:flex; align-items:center; justify-content:center; z-index:5;
+    }
+    .panel {
+      width:min(680px,92vw); background:#202632; border:1px solid #566073; border-radius:16px;
+      padding:24px; box-shadow:0 18px 80px #000c;
+    }
+    h1,h2 { margin:0 0 12px; }
+    .sub { color:#aeb7c5; margin-bottom:18px; line-height:1.55; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; }
+    input, button {
+      border:1px solid #596578; background:#12161d; color:white; padding:12px 14px; border-radius:10px;
+      font-size:15px;
+    }
+    input { flex:1; min-width:180px; }
+    button { cursor:pointer; }
+    button:hover { background:#2b3442; }
+    .char {
+      flex:1; min-width:260px; text-align:left; padding:16px; border:1px solid #4a5568;
+      background:#161b24; border-radius:12px; cursor:pointer;
+    }
+    .char:hover { border-color:#9aa9c0; }
+    .char strong { font-size:20px; display:block; margin-bottom:6px; }
+    .tag { display:inline-block; font-size:12px; background:#303949; padding:3px 7px; border-radius:6px; margin-right:4px; }
+    #help { color:#aab2bf; margin-top:10px; font-size:13px; line-height:1.5; }
+    #rewardModal, #resultModal { display:none; }
+    .rewardCard {
+      flex:1; min-width:180px; background:#151a22; border:1px solid #536079; border-radius:12px; padding:16px;
+      cursor:pointer;
+    }
+    .rewardCard:hover { transform:translateY(-2px); border-color:#b5c7e3; }
+    .rewardCard h3 { margin:0 0 8px; }
+    #status { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .skill { padding:2px 6px; border-radius:5px; background:#2a3140; margin-left:4px; }
+    .locked { opacity:.35; }
+  </style>
+</head>
+<body>
+<div id="wrap">
+  <div id="top">
+    <div id="status">연결 전</div>
+    <div>WASD 이동 · 마우스 조준 · 좌클릭 기본공격 · Q/E/R 스킬 · Space 회피</div>
+  </div>
+  <canvas id="game" width="960" height="600"></canvas>
+  <div id="help">
+    같은 방 코드로 브라우저 창을 2개 열어 접속하면 협동 플레이가 됩니다.
+    이재욱은 근거리 패링형, 김우찬은 원거리 표식/사격형입니다.
+  </div>
+</div>
+
+<div id="join">
+  <div class="panel">
+    <h1>2인 협동 로그라이크</h1>
+    <div class="sub">5개 스테이지를 돌파하세요. 1~3 스테이지 클리어 시 스킬이 하나씩 해금되고, 매 스테이지 후 보상 3개 중 하나를 선택합니다.</div>
+    <div class="row" style="margin-bottom:14px;">
+      <input id="room" value="TEST" maxlength="20" placeholder="방 코드">
+    </div>
+    <div class="row">
+      <div class="char" onclick="connectGame('jaeuk')">
+        <strong>이재욱</strong>
+        <span class="tag">남성</span><span class="tag">근거리</span><span class="tag">패링</span>
+        <div class="sub" style="margin:10px 0 0">장검으로 접근전을 펼칩니다. Q 패링 → 반격 강화, E 돌진 베기, R 수호의 원.</div>
+      </div>
+      <div class="char" onclick="connectGame('woochan')">
+        <strong>김우찬</strong>
+        <span class="tag">여성</span><span class="tag">원거리</span><span class="tag">표식</span>
+        <div class="sub" style="margin:10px 0 0">마력총으로 안전거리에서 공격합니다. Q 표식, E 분열 사격, R 유성 저격.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="rewardModal">
+  <div class="panel">
+    <h2>스테이지 클리어</h2>
+    <div class="sub" id="unlockText">보상 하나를 선택하세요.</div>
+    <div class="row" id="rewardList"></div>
+  </div>
+</div>
+
+<div id="resultModal">
+  <div class="panel">
+    <h2 id="resultTitle"></h2>
+    <div class="sub" id="resultText"></div>
+    <button onclick="sendRestart()">다시 시작</button>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+
+let ws = null;
+let playerId = null;
+let character = null;
+let state = null;
+let rewardShownForStage = -1;
+let resultShown = false;
+
+const keys = {};
+const input = {up:false,down:false,left:false,right:false,attack:false,s1:false,s2:false,s3:false,dash:false,aim_x:1,aim_y:0};
+
+function connectGame(charId) {
+  const room = (document.getElementById('room').value || 'TEST').toUpperCase();
+  character = charId;
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws/${encodeURIComponent(room)}/${charId}`);
+  ws.onopen = () => {
+    document.getElementById('join').style.display = 'none';
+    statusEl.textContent = `방 ${room} 연결됨`;
+  };
+  ws.onmessage = ev => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === 'welcome') {
+      playerId = msg.player_id;
+    } else if (msg.type === 'state') {
+      state = msg;
+      handleUI();
+    }
+  };
+  ws.onclose = () => statusEl.textContent = '연결이 종료되었습니다.';
+}
+
+function handleUI() {
+  if (!state || !playerId) return;
+  const me = state.players[playerId];
+  if (!me) return;
+  statusEl.textContent = `${state.message} · ${me.name} HP ${Math.ceil(me.hp)}/${Math.ceil(me.max_hp)} · 스킬 ${me.unlocked}/3`;
+
+  const rewardModal = document.getElementById('rewardModal');
+  if (state.mode === 'reward' && !(state.reward_selected || []).includes(playerId)) {
+    if (rewardShownForStage !== state.stage) {
+      rewardShownForStage = state.stage;
+      const unlock = state.stage <= 3 ? `스킬 ${state.stage}이 해금되었습니다. ` : '';
+      document.getElementById('unlockText').textContent = unlock + '보상 하나를 선택하세요.';
+      const list = document.getElementById('rewardList');
+      list.innerHTML = '';
+      const choices = state.reward_choices[playerId] || [];
+      choices.forEach(id => {
+        const r = state.rewards[id];
+        const el = document.createElement('div');
+        el.className = 'rewardCard';
+        el.innerHTML = `<h3>${r.title}</h3><div>${r.desc}</div>`;
+        el.onclick = () => {
+          ws.send(JSON.stringify({type:'reward', choice:id}));
+          rewardModal.style.display = 'none';
+        };
+        list.appendChild(el);
+      });
+      rewardModal.style.display = 'flex';
+    }
+  } else {
+    rewardModal.style.display = 'none';
+  }
+
+  if ((state.mode === 'victory' || state.mode === 'gameover') && !resultShown) {
+    resultShown = true;
+    document.getElementById('resultTitle').textContent = state.mode === 'victory' ? 'RUN CLEAR' : 'GAME OVER';
+    document.getElementById('resultText').textContent = state.message;
+    document.getElementById('resultModal').style.display = 'flex';
+  }
+  if (state.mode === 'playing') {
+    resultShown = false;
+    document.getElementById('resultModal').style.display = 'none';
+  }
+}
+
+function sendRestart() {
+  if (ws && ws.readyState === 1) {
+    ws.send(JSON.stringify({type:'restart'}));
+  }
+}
+
+window.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (['Space','KeyQ','KeyE','KeyR'].includes(e.code)) e.preventDefault();
+});
+window.addEventListener('keyup', e => keys[e.code] = false);
+canvas.addEventListener('mousedown', e => { if (e.button === 0) input.attack = true; });
+window.addEventListener('mouseup', e => { if (e.button === 0) input.attack = false; });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+canvas.addEventListener('mousemove', e => {
+  const r = canvas.getBoundingClientRect();
+  const mx = (e.clientX - r.left) * canvas.width / r.width;
+  const my = (e.clientY - r.top) * canvas.height / r.height;
+  if (state && playerId && state.players[playerId]) {
+    const p = state.players[playerId];
+    let dx = mx - p.x, dy = my - p.y;
+    const d = Math.hypot(dx,dy) || 1;
+    input.aim_x = dx/d; input.aim_y = dy/d;
+  }
+});
+
+setInterval(() => {
+  if (!ws || ws.readyState !== 1) return;
+  input.up = !!keys['KeyW'];
+  input.down = !!keys['KeyS'];
+  input.left = !!keys['KeyA'];
+  input.right = !!keys['KeyD'];
+  input.s1 = !!keys['KeyQ'];
+  input.s2 = !!keys['KeyE'];
+  input.s3 = !!keys['KeyR'];
+  input.dash = !!keys['Space'];
+  ws.send(JSON.stringify({type:'input', ...input}));
+}, 1000/30);
+
+function drawGrid() {
+  ctx.fillStyle = '#1a2029';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.strokeStyle = '#232b37';
+  ctx.lineWidth = 1;
+  for (let x=0; x<canvas.width; x+=48) {
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke();
+  }
+  for (let y=0; y<canvas.height; y+=48) {
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke();
+  }
+  ctx.fillStyle = '#141820';
+  ctx.fillRect(0,0,canvas.width,38);
+}
+
+function drawHumanoid(p, isMe) {
+  const x=p.x,y=p.y;
+  const female = p.character === 'woochan';
+  const main = female ? '#d47cb8' : '#6f8fd1';
+  const skin = '#e2b08f';
+  ctx.save();
+  ctx.translate(x,y);
+
+  if (isMe) {
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0,0,23,0,Math.PI*2); ctx.stroke();
+  }
+
+  if (p.guardian_until > state.server_time) {
+    ctx.strokeStyle = '#8fd4ff';
+    ctx.lineWidth = 4;
+    ctx.globalAlpha = .55;
+    ctx.beginPath(); ctx.arc(0,0,68,0,Math.PI*2); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  if (p.parry_until > state.server_time) {
+    ctx.strokeStyle = '#ffe38f';
+    ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.arc(0,0,31,-1.2,1.2); ctx.stroke();
+  }
+
+  // legs
+  ctx.strokeStyle = '#cbd3df'; ctx.lineWidth=5; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(-5,10); ctx.lineTo(-9,24); ctx.moveTo(5,10); ctx.lineTo(9,24); ctx.stroke();
+  // torso
+  ctx.fillStyle = main; ctx.fillRect(-9,-7,18,22);
+  // arms
+  ctx.strokeStyle = skin; ctx.lineWidth=5;
+  ctx.beginPath(); ctx.moveTo(-8,-2); ctx.lineTo(-15,9); ctx.moveTo(8,-2); ctx.lineTo(15,7); ctx.stroke();
+  // head
+  ctx.fillStyle = skin; ctx.beginPath(); ctx.arc(0,-16,10,0,Math.PI*2); ctx.fill();
+
+  // hair / silhouette
+  ctx.fillStyle = female ? '#4b2b43' : '#2f3542';
+  if (female) {
+    ctx.beginPath(); ctx.arc(0,-18,11,Math.PI,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(8,-16,6,0,Math.PI*2); ctx.fill(); // ponytail
+  } else {
+    ctx.beginPath(); ctx.arc(0,-19,10,Math.PI,Math.PI*2); ctx.fill();
+  }
+
+  if (female) {
+    // ranged weapon
+    ctx.strokeStyle='#dce6ff'; ctx.lineWidth=4;
+    ctx.beginPath(); ctx.moveTo(12,3); ctx.lineTo(25,1); ctx.stroke();
+  } else {
+    // sword
+    ctx.strokeStyle='#e7edf7'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(12,4); ctx.lineTo(28,-9); ctx.stroke();
+    ctx.strokeStyle='#8f6d3e'; ctx.lineWidth=4;
+    ctx.beginPath(); ctx.moveTo(10,6); ctx.lineTo(15,1); ctx.stroke();
+  }
+
+  // HP bar
+  ctx.fillStyle='#141820'; ctx.fillRect(-22,30,44,5);
+  ctx.fillStyle = p.alive ? '#65d17b' : '#666';
+  ctx.fillRect(-22,30,44*Math.max(0,p.hp/p.max_hp),5);
+  ctx.restore();
+}
+
+function drawEnemy(e) {
+  const marked = e.marked_until > state.server_time;
+  const vuln = e.vulnerable_until > state.server_time;
+  let c = '#d75d5d';
+  if (e.type==='runner') c='#e38b4e';
+  if (e.type==='shooter') c='#b06bd3';
+  if (e.type==='elite') c='#d3b25f';
+  if (e.type==='boss') c='#7f2e37';
+
+  ctx.save(); ctx.translate(e.x,e.y);
+  if (marked) {
+    ctx.strokeStyle='#ff7bd4'; ctx.lineWidth=3; ctx.beginPath(); ctx.arc(0,0,e.radius+9,0,Math.PI*2); ctx.stroke();
+  }
+  if (vuln) {
+    ctx.strokeStyle='#ffd36e'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(0,0,e.radius+5,0,Math.PI*2); ctx.stroke();
+  }
+  // simple humanoid enemy
+  ctx.strokeStyle='#d4c4bc'; ctx.lineWidth=Math.max(4,e.radius/5); ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(-6,8); ctx.lineTo(-10,e.radius); ctx.moveTo(6,8); ctx.lineTo(10,e.radius); ctx.stroke();
+  ctx.fillStyle=c; ctx.fillRect(-e.radius*.48,-7,e.radius*.96,e.radius*.95);
+  ctx.fillStyle='#c8a18c'; ctx.beginPath(); ctx.arc(0,-e.radius*.62,e.radius*.48,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#20232a'; ctx.beginPath(); ctx.arc(0,-e.radius*.72,e.radius*.48,Math.PI,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#101217'; ctx.fillRect(-e.radius, e.radius+7, e.radius*2, 5);
+  ctx.fillStyle='#e06060'; ctx.fillRect(-e.radius,e.radius+7,e.radius*2*Math.max(0,e.hp/e.max_hp),5);
+  ctx.restore();
+}
+
+function drawProjectiles() {
+  for (const pr of state.projectiles || []) {
+    ctx.fillStyle = pr.owner === 'player' ? '#84d9ff' : '#ff8a7c';
+    ctx.beginPath(); ctx.arc(pr.x,pr.y,pr.radius,0,Math.PI*2); ctx.fill();
+  }
+}
+
+function drawHUD() {
+  if (!state || !playerId || !state.players[playerId]) return;
+  const me = state.players[playerId];
+  ctx.fillStyle='#e9eef7'; ctx.font='bold 16px Arial';
+  ctx.fillText(`STAGE ${state.stage}/5`, 18, 25);
+
+  ctx.font='13px Arial';
+  const skills = me.character === 'jaeuk'
+    ? ['Q 강철 반격','E 돌진 베기','R 수호의 원']
+    : ['Q 추적 표식','E 분열 사격','R 유성 저격'];
+  skills.forEach((s,i)=>{
+    ctx.globalAlpha = i < me.unlocked ? 1 : .28;
+    ctx.fillStyle='#dbe5f4';
+    ctx.fillText(s, 630+i*105, 24);
+  });
+  ctx.globalAlpha=1;
+
+  if (state.mode==='reward') {
+    ctx.fillStyle='#ffffffaa'; ctx.font='bold 18px Arial';
+    ctx.fillText('동료의 보상 선택을 기다리는 중...', 330, 570);
+  }
+}
+
+function render() {
+  drawGrid();
+  if (state) {
+    for (const e of state.enemies || []) drawEnemy(e);
+    drawProjectiles();
+    for (const [pid,p] of Object.entries(state.players || {})) drawHumanoid(p, pid===playerId);
+    drawHUD();
+  } else {
+    ctx.fillStyle='#b9c4d5'; ctx.font='22px Arial';
+    ctx.fillText('캐릭터를 선택해 게임을 시작하세요.', 300, 300);
+  }
+  requestAnimationFrame(render);
+}
+render();
+</script>
+</body>
+</html>

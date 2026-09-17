@@ -1,0 +1,13 @@
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.git
+.gitignore
+README.md
+self_test.py
+run.bat
+run.sh
+run_network.bat
+publish_to_github.bat
